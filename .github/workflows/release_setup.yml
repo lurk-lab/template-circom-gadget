@@ -1,0 +1,34 @@
+name: Update version and create Release's PR Workflow
+
+on:
+  workflow_dispatch:
+    # Allows the maintainer in charge of the release to input the next release tag when running the workflow.
+    inputs:
+      version:
+        description: 'Version'
+        required: true
+        type: string
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Change the current Unreleased section of the changelog to the input tag.
+      - name: Update Changelog
+        id: update_changelog
+        run: |
+          sed -i 's/Unreleased/${{ github.event.inputs.version }}/g'   CHANGELOG.md
+
+      # Create the release Pull Request.
+      - name: Create pull request
+        id: create_pr
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.token }}
+          branch: release/${{ github.event.inputs.version }}
+          title: "Release: ${{ github.event.inputs.version }}"
+          body: "Pull request for our next release, ${{ github.event.inputs.version }}"
+          base: main

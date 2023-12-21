@@ -1,0 +1,97 @@
+name: Publish the release on our repository
+
+on:
+  pull_request:
+    types:
+      - closed
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Will only run on closed PR that have the prefix "Release:" in their title.
+    if: startsWith(github.event.pull_request.title, 'Release:')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Setup node in our workflow environment.
+      - name: Setup Node
+        id: setup_node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.10.0"
+          cache: 'npm'
+
+      # Configure Git so that the workflow will be able to properly handle repository related manipulation.
+      - name: Git Setup
+        run: |
+          git --version
+          git config user.name "GitHub Release Bot"
+          git config user.email "<>"
+          git remote set-url origin https://${{ secrets.TOKEN }}@github.com/${GITHUB_REPOSITORY}.git
+
+      # Install the Circom Binary, make it executable and move it to our global binaries.
+      - name: Install Circom Binary
+        id: install_circom
+        run: |
+          # Download the binary & make it executable
+          curl -L -o circom 'https://github.com/iden3/circom/releases/download/v2.1.7/circom-linux-amd64'
+          chmod +x circom
+          sudo mv ./circom /usr/bin/circom
+          git pull
+
+      # Install npm dependencies to be able to run tests.
+      - name: Install dependencies
+        id: install_dep
+        run: |
+          npm ci
+
+      # Run unit tests.
+      - name: Run tests
+        id: run_tests
+        run: |
+          npm run test
+
+      # Get the next release tag. This is taken from the CHANGELOG file, filtering the first version displayed as the valid
+      # one.
+      - name: Get tag
+        id: get_tag
+        run: |
+          next_version=$(grep -m 1 -oP "^## \[\K[^\]]+" CHANGELOG.md)
+          echo "version=$next_version" >> $GITHUB_ENV
+
+      # Tag the current commit and push it to our repository.
+      - name: Tag the commit
+        run: |
+          git tag -a "${{ env.version }}" -m "Version ${{ env.version }}"
+          git push origin --tags
+
+      # Parse the latest version description from our CHANGELOG file.
+      - name: Create Changelog diff
+        id: changelog_diff
+        run: |
+          sed -n "/^## \[${{ env.version }}\]/,/^## \[$(git describe --abbrev=0 --tags $(git rev-list --tags --skip=1 --max-count=1))\]/{/^## \[$(git describe --abbrev=0 --tags $(git rev-list --tags --skip=1 --max-count=1))\]/!p;}" CHANGELOG.md > RELEASE_NOTE.md
+
+      # Compile the target circuit to generate r1cs and wasm file.
+      - name: Compile circuits
+        id: compile_circuits
+        run: |
+          circom 'circuits/${{ env.CIRCUIT_NAME }}.circom' --r1cs --wasm --prime 'vesta'
+
+      # Create the actual release on the repository, using the parsed text from CHANGELOG as a description and attaching
+      # the compiled files to it.
+      - name: Release
+        id: release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: RELEASE_NOTE.md
+          files: |
+            ./${{ env.CIRCUIT_NAME }}.r1cs
+            ./${{ env.CIRCUIT_NAME }}_js/${{ env.CIRCUIT_NAME }}.wasm
+          tag_name: ${{ env.version }}
+          token: ${{ secrets.TOKEN }}
+    env:
+      # <AUTHOR>/<NAME> for the repository
+      GITHUB_REPOSITORY: lurk-lab/template-circom-gadget
+      # Name of the target circuit.
+      CIRCUIT_NAME: template-circom-gadget
